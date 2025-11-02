@@ -242,7 +242,12 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
     
     # Add chat title
     st.markdown(f"##### Model Chat ({model_display_name})")
-    
+
+    # Display input context with probe scores if available
+    if hasattr(st.session_state, 'input_token_html') and st.session_state.input_token_html:
+        with st.expander("🔍 Full Context (Input Tokens with Probe Scores)", expanded=False):
+            st.markdown(f'<div style="padding: 10px; background-color: #f0f0f0; border-radius: 8px;">{st.session_state.input_token_html}</div>', unsafe_allow_html=True)
+
     # Create the chat messages container
     chat_html = '<div class="chat-messages">'
     for msg in st.session_state.chat_history:
@@ -255,7 +260,7 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
             else:
                 chat_html += f'<div class="message-wrapper-assistant"><div class="assistant-message"><div class="message-header">Assistant</div>{msg["content"]}</div></div>'
     chat_html += '</div>'
-    
+
     # Display chat messages
     st.markdown(chat_html, unsafe_allow_html=True)
     
@@ -274,6 +279,11 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
     with controls_col1:
         if st.button("Clear Chat", type="secondary", use_container_width=True):
             st.session_state.chat_history = []
+            # Clear input token visualization
+            if hasattr(st.session_state, 'input_token_html'):
+                st.session_state.input_token_html = None
+            if hasattr(st.session_state, 'input_token_data'):
+                st.session_state.input_token_data = None
             st.rerun()
     
     with controls_col2:
@@ -332,18 +342,43 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                     if "error" in result:
                         st.error(f"Generation failed: {result['error']}")
                     else:
-                        # Use returned tokens and text
+                        # Process input tokens
+                        input_tokens = result["input_tokens"]
+                        input_probs = result["input_probe_probs"]
+                        input_predictions = [1 if p > threshold else 0 for p in input_probs]
+
+                        print(f"\nInput probs ({len(input_tokens)} tokens):")
+                        for tok, prob in zip(input_tokens, input_probs):
+                            print(f"{tok} ({prob:.4f}) ", end="")
+
+                        # Create highlighted HTML for input tokens
+                        input_html_content = create_highlighted_response(
+                            input_tokens,
+                            input_probs,
+                            input_predictions,
+                            threshold
+                        )
+
+                        # Store input token visualization in session state
+                        st.session_state.input_token_html = input_html_content
+                        st.session_state.input_token_data = {
+                            "tokens": input_tokens,
+                            "probs": input_probs,
+                            "token_ids": result["input_token_ids"]
+                        }
+
+                        # Process generated tokens
                         response_tokens = result["generated_tokens"]
                         generated_text = result["generated_text"]
                         response_probs = result["probe_probs"]
 
-                        print(f"Response probs:")
+                        print(f"\nResponse probs ({len(response_tokens)} tokens):")
                         for tok, prob in zip(response_tokens, response_probs):
                             print(f"{tok} ({prob:.4f}) ", end="")
-                        
+
                         # Calculate predictions based on threshold
                         response_predictions = [1 if p > threshold else 0 for p in response_probs]
-                        
+
                         # Create highlighted HTML for the response
                         html_content = create_highlighted_response(
                             response_tokens,
@@ -351,7 +386,7 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                             response_predictions,
                             threshold
                         )
-                        
+
                         # Add assistant response to history
                         st.session_state.chat_history.append({
                             "role": "assistant",
@@ -360,7 +395,7 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                             "token_ids": result["generated_token_ids"],
                             "probe_probs": response_probs
                         })
-                        
+
                         # Rerun to update display
                         st.rerun()
                         

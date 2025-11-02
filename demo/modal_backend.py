@@ -320,24 +320,34 @@ class ProbeInferenceService:
             
             # Storage for probe probabilities
             probe_probs = []
+            input_probe_probs = []
             first_fwd_pass = True
-            
+
             def activation_hook(module, input, output):
-                nonlocal first_fwd_pass, probe_probs
-                if first_fwd_pass:
-                    # Skip the first forward pass (prompt processing)
-                    first_fwd_pass = False
-                    return
-                
+                nonlocal first_fwd_pass, probe_probs, input_probe_probs
+
                 # Extract hidden states and compute probe probability
                 assert len(output) == 2
                 hidden_states, residual = output
                 resid_post = hidden_states + residual
-                
+
                 with torch.no_grad():
                     probe_logits = probe_head(resid_post)
-                    prob = torch.sigmoid(probe_logits).squeeze(-1)
-                    probe_probs.append(prob.item())
+                    probs = torch.sigmoid(probe_logits).squeeze(-1)
+
+                    if first_fwd_pass:
+                        # First forward pass: capture all input token scores
+                        # Handle both batch and single token cases
+                        if probs.dim() == 0:
+                            # Single token (shouldn't happen in prefill, but handle it)
+                            input_probe_probs.append(probs.item())
+                        else:
+                            # Batch of tokens (typical prefill case)
+                            input_probe_probs.extend(probs.cpu().tolist())
+                        first_fwd_pass = False
+                    else:
+                        # Subsequent forward passes: single token per pass (decode)
+                        probe_probs.append(probs.item())
             
             # Register hook
             hook_handle = target_layer.register_forward_hook(activation_hook)
@@ -366,8 +376,14 @@ class ProbeInferenceService:
             # Decode tokens
             generated_tokens = self.tokenizer.convert_ids_to_tokens(generated_ids)
             generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
+
+            # Decode input tokens
+            input_tokens = self.tokenizer.convert_ids_to_tokens(prompt_token_ids)
+
             return {
+                "input_token_ids": prompt_token_ids,
+                "input_tokens": input_tokens,
+                "input_probe_probs": input_probe_probs,
                 "generated_token_ids": generated_ids,
                 "generated_tokens": generated_tokens,
                 "generated_text": generated_text,
