@@ -10,7 +10,7 @@ import uuid
 import json
 import os
 
-def conversation_builder_ui(probe_service=None, probe_id=None, repo_id=None, threshold=0.5, max_tokens=512, temperature=0.7) -> tuple[str, List[Dict[str, str]]]:
+def conversation_builder_ui(probe_service=None, probe_id=None, repo_id=None, threshold=0.6, max_tokens=512, temperature=0.7) -> tuple[str, List[Dict[str, str]]]:
     """
     Create a UI for building multi-turn conversations.
     Returns: (input_method, list_of_messages)
@@ -25,8 +25,19 @@ def conversation_builder_ui(probe_service=None, probe_id=None, repo_id=None, thr
     
     messages = []
     
+    # Add toggle for prefill-only mode
+    st.markdown("---")
+    col_toggle1, col_toggle2 = st.columns([1, 3])
+    with col_toggle1:
+        only_prefill = st.checkbox("Prefill Only Mode", value=False, 
+                                   help="When enabled, only computes probe probabilities for input tokens without generating a response")
+    with col_toggle2:
+        if only_prefill:
+            st.info("ℹ️ Prefill Only Mode: The model will analyze your input tokens but won't generate a response.")
+    st.markdown("---")
+    
     if input_method == "Chat with Model":
-        messages = chat_with_model(probe_service, probe_id, repo_id, threshold, max_tokens, temperature)
+        messages = chat_with_model(probe_service, probe_id, repo_id, threshold, max_tokens, temperature, only_prefill)
     elif input_method == "Build turn-by-turn":
         messages = build_conversation_manually()
     else:  # Paste JSON
@@ -151,7 +162,7 @@ def import_json_conversation() -> List[Dict[str, str]]:
     
     return messages
 
-def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], threshold: float, max_tokens: int, temperature: float) -> List[Dict[str, str]]:
+def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], threshold: float, max_tokens: int, temperature: float, only_prefill: bool = False) -> List[Dict[str, str]]:
     """Interactive chat with the model."""
     
     # Initialize chat history in session state
@@ -237,6 +248,16 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
         z-index: 1000;
         margin-bottom: 2px;
     }
+    /* Prefill token styling */
+    .prefill-token {
+        border-radius: 3px;
+        padding: 1px 2px;
+        margin: 1px;
+        opacity: 0.85;
+    }
+    .prefill-token:hover::after {
+        content: "Input prob: " attr(data-prob);
+    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -250,7 +271,10 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
             chat_html += f'<div class="message-wrapper-user"><div class="user-message"><div class="message-header">User</div>{msg["content"]}</div></div>'
         else:
             # For assistant messages, show with hallucination highlighting if available
-            if "html_content" in msg:
+            if msg.get("is_prefill_only", False):
+                # Special rendering for prefill-only analysis
+                chat_html += f'<div class="message-wrapper-assistant"><div class="assistant-message" style="background-color: #e8f4f8;"><div class="message-header">Prefill Analysis</div>{msg.get("html_content", "")}</div></div>'
+            elif "html_content" in msg:
                 chat_html += f'<div class="message-wrapper-assistant"><div class="assistant-message"><div class="message-header">Assistant</div>{msg["html_content"]}</div></div>'
             else:
                 chat_html += f'<div class="message-wrapper-assistant"><div class="assistant-message"><div class="message-header">Assistant</div>{msg["content"]}</div></div>'
@@ -326,20 +350,87 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                         repo_id,
                         threshold,
                         st.session_state.chat_max_tokens,
-                        st.session_state.chat_temperature
+                        st.session_state.chat_temperature,
+                        only_prefill
                     )
 
+                    # Debug: Print full result
+                    print(f"Full result from Modal: {result}")
+                    
                     if "error" in result:
                         st.error(f"Generation failed: {result['error']}")
+                        if "traceback" in result:
+                            with st.expander("Show Error Details"):
+                                st.code(result["traceback"])
                     else:
+                        # Check if this is a prefill-only response
+                        is_prefill_only = result.get("only_prefill", False)
+                        
                         # Use returned tokens and text
-                        response_tokens = result["generated_tokens"]
-                        generated_text = result["generated_text"]
-                        response_probs = result["probe_probs"]
+                        response_tokens = result.get("generated_tokens", [])
+                        generated_text = result.get("generated_text", "")
+                        response_probs = result.get("probe_probs", [])
+                        prefill_tokens = result.get("prefill_tokens", [])
+                        prefill_probs = result.get("prefill_probs", [])
 
+                        print(f"Is prefill only: {is_prefill_only}")
+                        print(f"Response tokens count: {len(response_tokens)}")
+                        print(f"Response probs count: {len(response_probs)}")
+                        print(f"Prefill tokens count: {len(prefill_tokens)}")
+                        print(f"Prefill probs count: {len(prefill_probs)}")
+                        print(f"Generated text: {generated_text}")
                         print(f"Response probs:")
                         for tok, prob in zip(response_tokens, response_probs):
                             print(f"{tok} ({prob:.4f}) ", end="")
+                        print()  # Add newline
+                        
+                        # Handle prefill-only mode
+                        if is_prefill_only:
+                            if not prefill_tokens or not prefill_probs:
+                                st.warning("⚠️ No prefill probabilities returned.")
+                                st.session_state.chat_history.pop()
+                                return
+                            
+                            # Calculate predictions based on threshold
+                            prefill_predictions = [1 if p > threshold else 0 for p in prefill_probs]
+                            
+                            # Create highlighted HTML for prefill tokens only
+                            html_content = create_prefill_only_response(
+                                prefill_tokens,
+                                prefill_probs,
+                                prefill_predictions,
+                                threshold
+                            )
+                            
+                            # Add special indicator for prefill-only analysis
+                            st.session_state.chat_history.append({
+                                "role": "assistant",
+                                "content": "[Prefill Analysis Complete]",
+                                "html_content": html_content,
+                                "is_prefill_only": True,
+                                "prefill_tokens": prefill_tokens,
+                                "prefill_probs": prefill_probs
+                            })
+                            
+                            st.rerun()
+                            return
+                        
+                        # Validate response (for normal generation mode)
+                        if not generated_text:
+                            st.warning("⚠️ Model generated an empty response. Please try again.")
+                            # Remove the user message we just added
+                            st.session_state.chat_history.pop()
+                            return
+                        
+                        if not response_tokens or not response_probs:
+                            st.warning("⚠️ No probe probabilities returned. Displaying text without highlighting.")
+                            # Add response without highlighting
+                            st.session_state.chat_history.append({
+                                "role": "assistant",
+                                "content": generated_text
+                            })
+                            st.rerun()
+                            return
                         
                         # Calculate predictions based on threshold
                         response_predictions = [1 if p > threshold else 0 for p in response_probs]
@@ -349,7 +440,9 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                             response_tokens,
                             response_probs,
                             response_predictions,
-                            threshold
+                            threshold,
+                            prefill_tokens=prefill_tokens,
+                            prefill_probs=prefill_probs
                         )
                         
                         # Add assistant response to history
@@ -357,7 +450,7 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
                             "role": "assistant",
                             "content": generated_text,
                             "html_content": html_content,
-                            "token_ids": result["generated_token_ids"],
+                            "token_ids": result.get("generated_token_ids", []),
                             "probe_probs": response_probs
                         })
                         
@@ -371,9 +464,109 @@ def chat_with_model(probe_service, probe_id: str, repo_id: Optional[str], thresh
     
     return st.session_state.chat_history
 
-def create_highlighted_response(tokens: List[str], probabilities: List[float], predictions: List[int], threshold: float = 0.3) -> str:
+def create_prefill_only_response(tokens: List[str], probabilities: List[float], predictions: List[int], threshold: float = 0.3) -> str:
+    """Create HTML display for prefill-only analysis (no generation)."""
+    html_parts = []
+    
+    # Add a header indicating this is prefill analysis
+    html_parts.append('<div style="background-color: #e8f4f8; padding: 8px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #2196F3;">')
+    html_parts.append('<strong>📊 Prefill Analysis</strong> - Probe probabilities for your input tokens')
+    html_parts.append('</div>')
+    
+    # Render prefill tokens with highlighting
+    for token, prob in zip(tokens, probabilities):
+        # Clean up token display
+        display_token = token.replace('▁', ' ').replace('Ġ', ' ')
+        if display_token.startswith('##'):
+            display_token = display_token[2:]
+        
+        # Handle Unicode characters that represent newlines
+        display_token = display_token.replace('\u010a', '\n')
+        display_token = display_token.replace('\u0120', ' ')
+        
+        # Also handle escaped Unicode sequences
+        if '\\u0120' in display_token:
+            display_token = display_token.replace('\\u0120', ' ')
+        if '\\u010a' in display_token:
+            display_token = display_token.replace('\\u010a', '\n')
+        
+        # Skip special tokens
+        if display_token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']:
+            continue
+        
+        # Color based on probability
+        if prob > threshold:
+            # Red shades for high probability (potential hallucination risk)
+            color = f"rgba(255, 0, 0, {0.15 + 0.4 * (prob - threshold) / (1 - threshold)})"
+            border = "2px solid rgba(255, 0, 0, 0.5)"
+        else:
+            # Green shades for low probability (good)
+            color = "rgba(0, 255, 0, 0.1)"
+            border = "1px solid rgba(0, 200, 0, 0.3)"
+        
+        # Process each character in the token for proper rendering
+        token_html = f'<span class="token-hover" style="background: {color}; border: {border}; padding: 2px 4px; border-radius: 3px; margin: 1px; cursor: pointer; position: relative;" data-prob="{prob:.3f}">'
+        
+        for char in display_token:
+            if char == '\n':
+                token_html += '<br>'
+            else:
+                token_html += char
+        
+        token_html += '</span>'
+        html_parts.append(token_html)
+    
+    # Add summary statistics
+    avg_prob = sum(probabilities) / len(probabilities) if probabilities else 0
+    high_risk_count = sum(1 for p in probabilities if p > threshold)
+    
+    html_parts.append('<div style="margin-top: 15px; padding: 10px; background-color: #f5f5f5; border-radius: 5px; font-size: 0.9em;">')
+    html_parts.append(f'<strong>Summary:</strong> {len(tokens)} tokens analyzed | ')
+    html_parts.append(f'Average probability: {avg_prob:.3f} | ')
+    html_parts.append(f'High-risk tokens: {high_risk_count} ({100*high_risk_count/len(tokens) if tokens else 0:.1f}%)')
+    html_parts.append('</div>')
+    
+    return "".join(html_parts)
+
+def create_highlighted_response(tokens: List[str], probabilities: List[float], predictions: List[int], threshold: float = 0.3, prefill_tokens: Optional[List[str]] = None, prefill_probs: Optional[List[float]] = None) -> str:
     """Create HTML with highlighted tokens based on hallucination probabilities."""
     html_parts = []
+    
+    # Render prefill tokens first (if provided)
+    if prefill_tokens and prefill_probs:
+        for token, prob in zip(prefill_tokens, prefill_probs):
+            # Clean up token display
+            display_token = token.replace('▁', ' ').replace('Ġ', ' ')
+            if display_token.startswith('##'):
+                display_token = display_token[2:]
+            
+            # Handle Unicode characters that represent newlines
+            display_token = display_token.replace('\u010a', '\n')
+            display_token = display_token.replace('\u0120', ' ')
+            
+            # Also handle escaped Unicode sequences
+            if '\\u0120' in display_token:
+                display_token = display_token.replace('\\u0120', ' ')
+            if '\\u010a' in display_token:
+                display_token = display_token.replace('\\u010a', '\n')
+            
+            # Skip special tokens
+            if display_token in ['<|begin_of_text|>', '<|start_header_id|>', '<|end_header_id|>', '<|eot_id|>']:
+                continue
+            
+            # Distinct styling for input tokens with dotted border
+            if prob > threshold:
+                color = f"rgba(100, 100, 255, {0.1 + 0.3 * (prob - threshold) / (1 - threshold)})"
+                border = "1px dotted rgba(100, 100, 255, 0.6)"
+            else:
+                color = "transparent"
+                border = "1px dotted rgba(150, 150, 150, 0.3)"
+            
+            token_html = f'<span class="token-hover prefill-token" style="background: {color}; border: {border}; padding: 1px 2px; border-radius: 3px; margin: 1px; cursor: pointer; position: relative; opacity: 0.85;" data-prob="{prob:.3f}" data-type="input">{display_token}</span>'
+            html_parts.append(token_html)
+        
+        # Add visual separator between input and generation
+        html_parts.append('<span style="color: #999; margin: 0 4px; font-weight: bold;">→</span>')
     
     # Join all tokens to handle bold text across token boundaries
     full_text = ""
@@ -545,6 +738,16 @@ def render_streaming_conversation(chat_history, streaming_delay=0.05):
         z-index: 1000;
         margin-bottom: 2px;
     }
+    /* Prefill token styling */
+    .prefill-token {
+        border-radius: 3px;
+        padding: 1px 2px;
+        margin: 1px;
+        opacity: 0.85;
+    }
+    .prefill-token:hover::after {
+        content: "Input prob: " attr(data-prob);
+    }
     /* Typing cursor animation */
     @keyframes blink {
         0% { opacity: 1; }
@@ -597,7 +800,7 @@ def render_streaming_conversation(chat_history, streaming_delay=0.05):
         status_text = st.empty()
     
     # Generate tokens progressively
-    threshold = 0.2
+    threshold = 0.6
     for i in range(len(tokens)):
         # Update progress
         progress = (i + 1) / len(tokens)
@@ -653,7 +856,7 @@ def render_streaming_conversation(chat_history, streaming_delay=0.05):
 def render_debug_conversation(chat_history):
     """Debug function to render conversation with hardcoded values."""
     
-    threshold = 0.30
+    threshold = 0.60
     
     # Generate HTML content for assistant message
     assistant_msg = chat_history[1]
@@ -735,6 +938,16 @@ def render_debug_conversation(chat_history):
         white-space: nowrap;
         z-index: 1000;
         margin-bottom: 2px;
+    }
+    /* Prefill token styling */
+    .prefill-token {
+        border-radius: 3px;
+        padding: 1px 2px;
+        margin: 1px;
+        opacity: 0.85;
+    }
+    .prefill-token:hover::after {
+        content: "Input prob: " attr(data-prob);
     }
     </style>
     """, unsafe_allow_html=True)

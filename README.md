@@ -130,20 +130,30 @@ The demo provides a real-time visualization of hallucination detection during te
 
 #### Running the Demo
 
-Both the Modal backend and Streamlit frontend must be run from inside the `demo/` directory:
+**Step 1: Deploy the Modal Backend**
+
+Navigate to the demo directory and deploy the backend to Modal:
 
 ```bash
-# Navigate to the demo directory
 cd demo
-
-# Deploy the Modal backend
 modal deploy modal_backend.py
+```
 
-# Run the Streamlit frontend (also from demo/)
+This deploys your vLLM inference service to Modal with GPU support. Modal will provide a URL for your deployment.
+
+**Step 2: Run Streamlit Locally**
+
+In the same directory, run the Streamlit frontend locally (it will connect to the Modal backend):
+
+```bash
 streamlit run probe_interface.py
 ```
 
-Open your browser to use the interface. The interface will connect to your deployed Modal backend and allow you to input prompts, generate text, and see real-time hallucination detection with color-coded tokens based on the probe's confidence scores.
+Open your browser (usually `http://localhost:8501`) to use the interface. The Streamlit app runs on your local machine and connects to the Modal backend for LLM inference. This allows you to:
+- Input prompts and generate text
+- See real-time hallucination detection with color-coded tokens
+- Use your custom probes from your HuggingFace repository (default: `Prakyathkantharaju/llama3-hallucination-probe`)
+- **Prefill Only Mode**: Analyze hallucination probabilities for your input tokens without generating a response (useful for prompt analysis and debugging)
 
 ## Citation
 

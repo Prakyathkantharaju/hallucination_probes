@@ -100,14 +100,14 @@ def main():
         )
     
     with col2:
-        probe_id = st.text_input("Probe ID", value=current_config.get('probe_id', 'llama3_1_8b_lora'))
+        probe_id = st.text_input("Probe ID", value=current_config.get('probe_id', 'clean_code_llama3_1_8b_lora'))
     
     with col3:
-        repo_id = st.text_input("Repository ID (optional)", value="", placeholder="andyrdt/hallucination-probes", 
-                               help="HuggingFace repository ID. Leave empty for default.")
+        repo_id = st.text_input("Repository ID (optional)", value="", placeholder="Prakyathkantharaju/llama3-hallucination-probe", 
+                               help="HuggingFace repository ID. Leave empty to use Prakyathkantharaju/llama3-hallucination-probe")
     
     # Initialize parameters for chat modes
-    threshold = 0.3  # Fixed threshold
+    threshold = 0.6  # Fixed threshold
     max_tokens = 1024
     temperature = 0.7
     
